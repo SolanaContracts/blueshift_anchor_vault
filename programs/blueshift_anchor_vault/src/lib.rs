@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_lang::system_program::{transfer, Transfer};
 
 //declare_id!("Bz2g5fUHJZ5Tv96Ao2ZGJLhBV7zUYapDH5HA7SBGQA6x");
 declare_id!("22222222222222222222222222222222222222222222");
@@ -8,12 +9,42 @@ pub mod blueshift_anchor_vault {
     use super::*;
 
     pub fn deposit(ctx: Context<VaultAction>, amount: u64) -> Result<()> {
-        
+        require_eq!(ctx.accounts.vault.lamports(), 0, VaultError::VaultAlreadyExists);
+        //confirms the vault is empty (preventing double deposits)
+        require_gt!(amount, Rent::get()?.minimum_balance(0), VaultError::InvalidAmount);
+        //checks the amount clears the rent-exempt threshold
+        transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.signer.to_account_info(),
+                    to: ctx.accounts.vault.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
         Ok(())
     }
  
     pub fn withdraw(ctx: Context<VaultAction>) -> Result<()> {
+        // Check if vault has any lamports
+        require_neq!(ctx.accounts.vault.lamports(), 0, VaultError::InvalidAmount);
+        // Create PDA signer seeds
+        let signer_key = ctx.accounts.signer.key();
+        let signer_seeds = &[b"vault", signer_key.as_ref(), &[ctx.bumps.vault]];
         
+        // Transfer all lamports from vault to signer
+        transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.vault.to_account_info(),
+                    to: ctx.accounts.signer.to_account_info(),
+                },
+                &[&signer_seeds[..]]
+            ),
+            ctx.accounts.vault.lamports()
+        )?;
         Ok(())
     }
 }
@@ -38,3 +69,9 @@ pub enum VaultError {
     #[msg("Invalid amount")]
     InvalidAmount,
 }
+
+
+// The security of this withdrawal is guaranteed by two factors:
+
+// The vault's PDA is derived using the signer's public key, ensuring only the original depositor can withdraw
+// The PDA's ability to sign the transfer is verified through the seeds we provide to CpiContext::new_with_signer
